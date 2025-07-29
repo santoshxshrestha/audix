@@ -250,7 +250,7 @@ fn play_music(
     initial_volume: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For rodio 0.21+, use the new API
-    let device = rodio::default_output_device().ok_or("No audio output device found")?;
+    let device = rodio::OutputStream;
 
     let (_stream, stream_handle) = OutputStream::try_from_device(&device)
         .map_err(|e| format!("Failed to create output stream: {:?}", e))?;
