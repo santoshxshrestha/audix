@@ -24,14 +24,7 @@ fn cli() -> Command {
                 .long("dir")
                 .value_name("DIRECTORY")
                 .help("Directory containing music files")
-                .required_unless_present("help"),
-        )
-        .arg(
-            Arg::new("help")
-                .short('h')
-                .long("help")
-                .help("Show help information")
-                .action(clap::ArgAction::Help),
+                .required(true),
         )
         .arg(
             Arg::new("shuffle")
@@ -58,6 +51,7 @@ struct PlayerState {
     position: Duration,
     duration: Duration,
     track_name: String,
+    playlist_len: usize,
 }
 
 impl Default for PlayerState {
@@ -69,6 +63,7 @@ impl Default for PlayerState {
             position: Duration::new(0, 0),
             duration: Duration::new(0, 0),
             track_name: String::new(),
+            playlist_len: 0,
         }
     }
 }
@@ -77,20 +72,31 @@ fn scan_music_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::
     let mut music_files = Vec::new();
     let supported_extensions = ["mp3", "wav", "flac", "ogg", "m4a"];
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    fn scan_recursive(
+        dir: &Path,
+        music_files: &mut Vec<std::path::PathBuf>,
+        extensions: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
 
-        if path.is_file() {
-            if let Some(extension) = path.extension() {
-                if let Some(ext_str) = extension.to_str() {
-                    if supported_extensions.contains(&ext_str.to_lowercase().as_str()) {
-                        music_files.push(path);
+            if path.is_dir() {
+                scan_recursive(&path, music_files, extensions)?;
+            } else if path.is_file() {
+                if let Some(extension) = path.extension() {
+                    if let Some(ext_str) = extension.to_str() {
+                        if extensions.contains(&ext_str.to_lowercase().as_str()) {
+                            music_files.push(path);
+                        }
                     }
                 }
             }
         }
+        Ok(())
     }
+
+    scan_recursive(dir, &mut music_files, &supported_extensions)?;
 
     if music_files.is_empty() {
         return Err("No supported audio files found in directory".into());
@@ -148,10 +154,7 @@ fn draw_volume_bar(volume: f32, width: usize) -> String {
     format!("{}{}", "█".repeat(filled.min(width)), "░".repeat(remaining))
 }
 
-fn display_ui(
-    state: &PlayerState,
-    playlist: &[std::path::PathBuf],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn display_ui(state: &PlayerState) -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = stdout();
 
     execute!(
@@ -163,7 +166,9 @@ fn display_ui(
     execute!(
         stdout,
         SetForegroundColor(Color::Cyan),
-        Print("  Audix Music Player\n"),
+        Print("╔══════════════════════════════════════════════════════╗\n"),
+        Print("║                  Audix Music Player                 ║\n"),
+        Print("╚══════════════════════════════════════════════════════╝\n"),
         ResetColor
     )?;
 
@@ -200,7 +205,7 @@ fn display_ui(
             "  {} Track {} of {}\n",
             status_icon,
             state.current_track + 1,
-            playlist.len()
+            state.playlist_len
         )),
         ResetColor
     )?;
@@ -219,22 +224,34 @@ fn display_ui(
     execute!(
         stdout,
         SetForegroundColor(Color::DarkGrey),
-        Print("  Controls:\n"),
-        Print("    [Space] Play/Pause  [h] Previous  [l] Next  [q] Quit\n"),
-        Print("    [↑/↓] Volume  [←/→] Seek\n"),
+        Print("  ╔═══════════════════════════════════════════════════════╗\n"),
+        Print("  ║                      Controls                         ║\n"),
+        Print("  ║  [Space] Play/Pause    [←/→] Previous/Next           ║\n"),
+        Print("  ║  [↑/↓] Volume          [r] Restart Track             ║\n"),
+        Print("  ║  [q] Quit              [s] Shuffle Toggle            ║\n"),
+        Print("  ╚═══════════════════════════════════════════════════════╝\n"),
         ResetColor
     )?;
 
     Ok(())
 }
 
+fn get_track_duration(_file_path: &Path) -> Duration {
+    Duration::from_secs(180)
+}
+
 fn play_music(
     files: &[std::path::PathBuf],
-    shuffle: bool,
+    mut shuffle: bool,
     initial_volume: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (_stream, stream_handle) = OutputStream::default()?;
-    let sink = Sink::connect_new(&stream_handle.mixer())?;
+    // Create audio output - compatible with rodio 0.19+
+    let (_stream, stream_handle) = OutputStream::try_default()
+        .map_err(|e| format!("Failed to create output stream: {}", e))?;
+
+    // Create sink - using the correct method for your rodio version
+    let sink =
+        Sink::try_new(&stream_handle).map_err(|e| format!("Failed to create sink: {}", e))?;
 
     let mut playlist = files.to_vec();
     if shuffle {
@@ -247,6 +264,7 @@ fn play_music(
 
     let state = Arc::new(Mutex::new(PlayerState {
         volume: initial_volume,
+        playlist_len: playlist.len(),
         ..Default::default()
     }));
 
@@ -254,89 +272,146 @@ fn play_music(
 
     let mut current_index = 0;
     let mut last_update = Instant::now();
+    let mut track_start_time = Instant::now();
 
     loop {
         if sink.empty() && current_index < playlist.len() {
             let file_path = &playlist[current_index];
             let track_name = file_path
-                .file_name()
+                .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
 
-            let file = std::fs::File::open(file_path)?;
-            let source = Decoder::new(BufReader::new(file))?;
-            let duration = Duration::from_secs(180);
+            match std::fs::File::open(file_path) {
+                Ok(file) => match Decoder::new(BufReader::new(file)) {
+                    Ok(source) => {
+                        let duration = get_track_duration(file_path);
 
-            {
-                let mut state_lock = state.lock().unwrap();
-                state_lock.current_track = current_index;
-                state_lock.track_name = track_name;
-                state_lock.duration = duration;
-                state_lock.position = Duration::new(0, 0);
-                state_lock.is_playing = true;
-            }
-
-            sink.append(source);
-            current_index += 1;
-        }
-
-        if current_index >= playlist.len() && sink.empty() {
-            break;
-        }
-
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(KeyEvent { code, .. }) = event::read()? {
-                let mut state_lock = state.lock().unwrap();
-
-                match code {
-                    KeyCode::Char(' ') => {
-                        if state_lock.is_playing {
-                            sink.pause();
-                            state_lock.is_playing = false;
-                        } else {
-                            sink.play();
+                        {
+                            let mut state_lock = state.lock().unwrap();
+                            state_lock.current_track = current_index;
+                            state_lock.track_name = track_name;
+                            state_lock.duration = duration;
+                            state_lock.position = Duration::new(0, 0);
                             state_lock.is_playing = true;
                         }
+
+                        sink.append(source);
+                        track_start_time = Instant::now();
+                        current_index += 1;
                     }
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('h') => {
-                        if current_index > 1 {
-                            current_index -= 2;
-                            sink.stop();
-                        }
+                    Err(e) => {
+                        eprintln!("Failed to decode {}: {}", file_path.display(), e);
+                        current_index += 1;
+                        continue;
                     }
-                    KeyCode::Char('l') => {
-                        sink.stop();
-                    }
-                    KeyCode::Up => {
-                        state_lock.volume = (state_lock.volume + 0.05).min(1.0);
-                        sink.set_volume(state_lock.volume);
-                    }
-                    KeyCode::Down => {
-                        state_lock.volume = (state_lock.volume - 0.05).max(0.0);
-                        sink.set_volume(state_lock.volume);
-                    }
-                    KeyCode::Left => {
-                        if state_lock.position.as_secs() > 10 {
-                            state_lock.position -= Duration::from_secs(10);
-                        }
-                    }
-                    KeyCode::Right => {
-                        if state_lock.position < state_lock.duration {
-                            state_lock.position += Duration::from_secs(10);
-                        }
-                    }
-                    _ => {}
+                },
+                Err(e) => {
+                    eprintln!("Failed to open {}: {}", file_path.display(), e);
+                    current_index += 1;
+                    continue;
                 }
             }
         }
 
-        if last_update.elapsed() >= Duration::from_millis(1000) {
+        if current_index >= playlist.len() && sink.empty() {
+            current_index = 0;
+            if !playlist.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+                let mut should_skip = false;
+                let mut should_previous = false;
+                let mut should_restart = false;
+                let mut should_shuffle = false;
+
+                {
+                    let mut state_lock = state.lock().unwrap();
+
+                    match code {
+                        KeyCode::Char(' ') => {
+                            if state_lock.is_playing {
+                                sink.pause();
+                                state_lock.is_playing = false;
+                            } else {
+                                sink.play();
+                                state_lock.is_playing = true;
+                            }
+                        }
+                        KeyCode::Char('q') => break,
+                        KeyCode::Left => {
+                            should_previous = true;
+                        }
+                        KeyCode::Right => {
+                            should_skip = true;
+                        }
+                        KeyCode::Char('r') => {
+                            should_restart = true;
+                        }
+                        KeyCode::Char('s') => {
+                            should_shuffle = true;
+                        }
+                        KeyCode::Up => {
+                            state_lock.volume = (state_lock.volume + 0.05).min(1.0);
+                            sink.set_volume(state_lock.volume);
+                        }
+                        KeyCode::Down => {
+                            state_lock.volume = (state_lock.volume - 0.05).max(0.0);
+                            sink.set_volume(state_lock.volume);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if should_skip {
+                    sink.stop();
+                } else if should_previous {
+                    if current_index > 1 {
+                        current_index -= 2;
+                        sink.stop();
+                    } else if current_index == 1 {
+                        current_index = playlist.len() - 1;
+                        sink.stop();
+                    }
+                } else if should_restart {
+                    if current_index > 0 {
+                        current_index -= 1;
+                        sink.stop();
+                    }
+                } else if should_shuffle {
+                    shuffle = !shuffle;
+                    if shuffle {
+                        use rand::seq::SliceRandom;
+                        let mut rng = rand::thread_rng();
+                        let current_track = if current_index > 0 {
+                            playlist[current_index - 1].clone()
+                        } else {
+                            playlist[0].clone()
+                        };
+                        playlist.shuffle(&mut rng);
+                        if let Some(pos) = playlist.iter().position(|x| x == &current_track) {
+                            playlist.swap(0, pos);
+                            current_index = 1;
+                        }
+                    } else {
+                        playlist = files.to_vec();
+                        playlist.sort();
+                    }
+                }
+            }
+        }
+
+        if last_update.elapsed() >= Duration::from_millis(100) {
             {
                 let mut state_lock = state.lock().unwrap();
-                if state_lock.is_playing && state_lock.position < state_lock.duration {
-                    state_lock.position += Duration::from_secs(1);
+                if state_lock.is_playing {
+                    state_lock.position = track_start_time.elapsed().min(state_lock.duration);
                 }
             }
             last_update = Instant::now();
@@ -344,7 +419,9 @@ fn play_music(
 
         {
             let state_lock = state.lock().unwrap();
-            display_ui(&state_lock, &playlist)?;
+            if let Err(e) = display_ui(&state_lock) {
+                eprintln!("Display error: {}", e);
+            }
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -356,7 +433,7 @@ fn play_music(
         terminal::Clear(ClearType::All),
         cursor::MoveTo(0, 0)
     )?;
-    println!("  Goodbye!");
+    println!("Thanks for using Audix Music Player! Goodbye!");
 
     Ok(())
 }
@@ -369,9 +446,9 @@ fn main() {
     let volume: f32 = matches
         .get_one::<String>("volume")
         .unwrap()
-        .parse()
-        .unwrap_or(0.7_f32)
-        .clamp(0.0, 1.0);
+        .parse::<f32>()
+        .unwrap_or(0.7f32)
+        .clamp(0.0f32, 1.0f32);
 
     let dir_path = Path::new(music_dir);
 
@@ -387,6 +464,7 @@ fn main() {
 
     match scan_music_files(dir_path) {
         Ok(files) => {
+            println!("Found {} audio files", files.len());
             if let Err(e) = play_music(&files, shuffle, volume) {
                 eprintln!("Playback error: {}", e);
                 std::process::exit(1);
@@ -398,3 +476,4 @@ fn main() {
         }
     }
 }
+
