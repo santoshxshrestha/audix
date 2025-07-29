@@ -6,7 +6,7 @@ use crossterm::{
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rodio::{Decoder, OutputStream, Sink};
 use std::fs;
 use std::io::{BufReader, stdout};
 use std::path::Path;
@@ -102,11 +102,11 @@ fn scan_music_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::
 
 fn draw_visualizer(width: usize) -> String {
     use rand::Rng;
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let mut bars = String::new();
 
     for _ in 0..width {
-        let height = rng.random_range(1..=8);
+        let height = rng.gen_range(1..=8);
         let bar = match height {
             1 => "▁",
             2 => "▂",
@@ -160,7 +160,6 @@ fn display_ui(
         cursor::MoveTo(0, 0)
     )?;
 
-    // Header
     execute!(
         stdout,
         SetForegroundColor(Color::Cyan),
@@ -168,7 +167,6 @@ fn display_ui(
         ResetColor
     )?;
 
-    // Track info
     execute!(
         stdout,
         SetForegroundColor(Color::Yellow),
@@ -176,7 +174,6 @@ fn display_ui(
         ResetColor
     )?;
 
-    // Visualizer
     execute!(
         stdout,
         SetForegroundColor(Color::Green),
@@ -184,7 +181,6 @@ fn display_ui(
         ResetColor
     )?;
 
-    // Progress bar
     let progress_bar = draw_progress_bar(state.position, state.duration, 50);
     execute!(
         stdout,
@@ -196,7 +192,6 @@ fn display_ui(
         ))
     )?;
 
-    // Playback status
     let status_icon = if state.is_playing { "" } else { "" };
     execute!(
         stdout,
@@ -210,7 +205,6 @@ fn display_ui(
         ResetColor
     )?;
 
-    // Volume
     let volume_bar = draw_volume_bar(state.volume, 20);
     execute!(
         stdout,
@@ -221,7 +215,6 @@ fn display_ui(
         ))
     )?;
 
-    // Controls
     execute!(stdout, Print("\n"))?;
     execute!(
         stdout,
@@ -240,13 +233,13 @@ fn play_music(
     shuffle: bool,
     initial_volume: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (_stream, stream_handle) = OutputStream::try_default()?;
-    let sink = Sink::try_new(&stream_handle)?;
+    let (_stream, stream_handle) = OutputStream::default()?;
+    let sink = Sink::connect_new(&stream_handle.mixer())?;
 
     let mut playlist = files.to_vec();
     if shuffle {
         use rand::seq::SliceRandom;
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         playlist.shuffle(&mut rng);
     }
 
@@ -257,16 +250,12 @@ fn play_music(
         ..Default::default()
     }));
 
-    let state_clone = Arc::clone(&state);
-
-    // Setup terminal
     terminal::enable_raw_mode()?;
 
     let mut current_index = 0;
     let mut last_update = Instant::now();
 
     loop {
-        // Load next track if needed
         if sink.empty() && current_index < playlist.len() {
             let file_path = &playlist[current_index];
             let track_name = file_path
@@ -277,9 +266,7 @@ fn play_music(
 
             let file = std::fs::File::open(file_path)?;
             let source = Decoder::new(BufReader::new(file))?;
-
-            // Get duration (approximation)
-            let duration = Duration::from_secs(180); // Default duration, would need metadata parsing for actual duration
+            let duration = Duration::from_secs(180);
 
             {
                 let mut state_lock = state.lock().unwrap();
@@ -294,12 +281,10 @@ fn play_music(
             current_index += 1;
         }
 
-        // Check if playlist finished
         if current_index >= playlist.len() && sink.empty() {
             break;
         }
 
-        // Handle input
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(KeyEvent { code, .. }) = event::read()? {
                 let mut state_lock = state.lock().unwrap();
@@ -316,34 +301,28 @@ fn play_music(
                     }
                     KeyCode::Char('q') => break,
                     KeyCode::Char('h') => {
-                        // Previous track
                         if current_index > 1 {
                             current_index -= 2;
                             sink.stop();
                         }
                     }
                     KeyCode::Char('l') => {
-                        // Next track
                         sink.stop();
                     }
                     KeyCode::Up => {
-                        // Volume up
                         state_lock.volume = (state_lock.volume + 0.05).min(1.0);
                         sink.set_volume(state_lock.volume);
                     }
                     KeyCode::Down => {
-                        // Volume down
                         state_lock.volume = (state_lock.volume - 0.05).max(0.0);
                         sink.set_volume(state_lock.volume);
                     }
                     KeyCode::Left => {
-                        // Seek backward (simplified)
                         if state_lock.position.as_secs() > 10 {
                             state_lock.position -= Duration::from_secs(10);
                         }
                     }
                     KeyCode::Right => {
-                        // Seek forward (simplified)
                         if state_lock.position < state_lock.duration {
                             state_lock.position += Duration::from_secs(10);
                         }
@@ -353,7 +332,6 @@ fn play_music(
             }
         }
 
-        // Update position (simplified - in real implementation you'd track actual playback position)
         if last_update.elapsed() >= Duration::from_millis(1000) {
             {
                 let mut state_lock = state.lock().unwrap();
@@ -364,7 +342,6 @@ fn play_music(
             last_update = Instant::now();
         }
 
-        // Update display
         {
             let state_lock = state.lock().unwrap();
             display_ui(&state_lock, &playlist)?;
@@ -373,7 +350,6 @@ fn play_music(
         thread::sleep(Duration::from_millis(50));
     }
 
-    // Cleanup
     terminal::disable_raw_mode()?;
     execute!(
         stdout(),

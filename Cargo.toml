@@ -8,6 +8,6 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
-rodio = { version = "0.21", features = ["mp3", "wav", "flac", "vorbis"] }
+rodio = "0.21"
 rand = "0.8"
 crossterm = "0.27"
