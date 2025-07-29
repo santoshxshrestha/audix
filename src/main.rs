@@ -1,3 +1,4 @@
+#![allow(unused)]
 use clap::{Arg, Command};
 use crossterm::{
     cursor,
@@ -6,6 +7,9 @@ use crossterm::{
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
+use rodio::Device;
+use rodio::OutputDevices;
+
 use rodio::{Decoder, OutputStream, Sink};
 use std::fs;
 use std::io::{BufReader, stdout};
@@ -246,8 +250,10 @@ fn play_music(
     initial_volume: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For rodio 0.21+, use the new API
-    let (_stream, stream_handle) = OutputStream::try_default()
-        .map_err(|e| format!("Failed to create output stream: {}", e))?;
+    let device = rodio::default_output_device().ok_or("No audio output device found")?;
+
+    let (_stream, stream_handle) = OutputStream::try_from_device(&device)
+        .map_err(|e| format!("Failed to create output stream: {:?}", e))?;
 
     // Use connect_new with mixer for rodio 0.21+
     let mixer = stream_handle.mixer();
