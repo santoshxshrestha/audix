@@ -245,13 +245,13 @@ fn play_music(
     mut shuffle: bool,
     initial_volume: f32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create audio output - compatible with rodio 0.19+
+    // For rodio 0.21+, use the new API
     let (_stream, stream_handle) = OutputStream::try_default()
         .map_err(|e| format!("Failed to create output stream: {}", e))?;
 
-    // Create sink - using the correct method for your rodio version
-    let sink =
-        Sink::try_new(&stream_handle).map_err(|e| format!("Failed to create sink: {}", e))?;
+    // Use connect_new with mixer for rodio 0.21+
+    let mixer = stream_handle.mixer();
+    let sink = Sink::connect_new(mixer);
 
     let mut playlist = files.to_vec();
     if shuffle {
@@ -476,4 +476,3 @@ fn main() {
         }
     }
 }
-
