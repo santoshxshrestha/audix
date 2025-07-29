@@ -17,6 +17,7 @@
           openssl
           rust-analyzer
           pkg-config
+          alsa-lib
         ];
 
         shellHook = ''
