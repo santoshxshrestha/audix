@@ -1,4 +1,3 @@
-#![allow(unused)]
 use clap::{Arg, Command};
 use crossterm::{
     cursor,
@@ -7,7 +6,7 @@ use crossterm::{
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::fs;
 use std::io::{BufReader, stdout};
 use std::path::Path;
@@ -103,11 +102,11 @@ fn scan_music_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::
 
 fn draw_visualizer(width: usize) -> String {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut bars = String::new();
 
     for _ in 0..width {
-        let height = rng.gen_range(1..=8);
+        let height = rng.random_range(1..=8);
         let bar = match height {
             1 => "▁",
             2 => "▂",
@@ -161,12 +160,15 @@ fn display_ui(
         cursor::MoveTo(0, 0)
     )?;
 
+    // Header
     execute!(
         stdout,
         SetForegroundColor(Color::Cyan),
         Print("  Audix Music Player\n"),
         ResetColor
     )?;
+
+    // Track info
     execute!(
         stdout,
         SetForegroundColor(Color::Yellow),
@@ -174,12 +176,15 @@ fn display_ui(
         ResetColor
     )?;
 
+    // Visualizer
     execute!(
         stdout,
         SetForegroundColor(Color::Green),
         Print(format!("  {}\n", draw_visualizer(50))),
         ResetColor
     )?;
+
+    // Progress bar
     let progress_bar = draw_progress_bar(state.position, state.duration, 50);
     execute!(
         stdout,
@@ -190,6 +195,8 @@ fn display_ui(
             format_duration(state.duration)
         ))
     )?;
+
+    // Playback status
     let status_icon = if state.is_playing { "" } else { "" };
     execute!(
         stdout,
@@ -203,6 +210,7 @@ fn display_ui(
         ResetColor
     )?;
 
+    // Volume
     let volume_bar = draw_volume_bar(state.volume, 20);
     execute!(
         stdout,
@@ -213,6 +221,7 @@ fn display_ui(
         ))
     )?;
 
+    // Controls
     execute!(stdout, Print("\n"))?;
     execute!(
         stdout,
@@ -237,7 +246,7 @@ fn play_music(
     let mut playlist = files.to_vec();
     if shuffle {
         use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         playlist.shuffle(&mut rng);
     }
 
@@ -250,12 +259,14 @@ fn play_music(
 
     let state_clone = Arc::clone(&state);
 
+    // Setup terminal
     terminal::enable_raw_mode()?;
 
     let mut current_index = 0;
     let mut last_update = Instant::now();
 
     loop {
+        // Load next track if needed
         if sink.empty() && current_index < playlist.len() {
             let file_path = &playlist[current_index];
             let track_name = file_path
@@ -267,6 +278,7 @@ fn play_music(
             let file = std::fs::File::open(file_path)?;
             let source = Decoder::new(BufReader::new(file))?;
 
+            // Get duration (approximation)
             let duration = Duration::from_secs(180); // Default duration, would need metadata parsing for actual duration
 
             {
@@ -282,10 +294,12 @@ fn play_music(
             current_index += 1;
         }
 
+        // Check if playlist finished
         if current_index >= playlist.len() && sink.empty() {
             break;
         }
 
+        // Handle input
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(KeyEvent { code, .. }) = event::read()? {
                 let mut state_lock = state.lock().unwrap();
@@ -339,6 +353,7 @@ fn play_music(
             }
         }
 
+        // Update position (simplified - in real implementation you'd track actual playback position)
         if last_update.elapsed() >= Duration::from_millis(1000) {
             {
                 let mut state_lock = state.lock().unwrap();
@@ -349,6 +364,7 @@ fn play_music(
             last_update = Instant::now();
         }
 
+        // Update display
         {
             let state_lock = state.lock().unwrap();
             display_ui(&state_lock, &playlist)?;
@@ -357,6 +373,7 @@ fn play_music(
         thread::sleep(Duration::from_millis(50));
     }
 
+    // Cleanup
     terminal::disable_raw_mode()?;
     execute!(
         stdout(),
@@ -377,7 +394,7 @@ fn main() {
         .get_one::<String>("volume")
         .unwrap()
         .parse()
-        .unwrap_or(0.7)
+        .unwrap_or(0.7_f32)
         .clamp(0.0, 1.0);
 
     let dir_path = Path::new(music_dir);
