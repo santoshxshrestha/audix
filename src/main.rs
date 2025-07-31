@@ -1,60 +1,53 @@
-use anyhow;
+use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode},
-    terminal,
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use rodio::{Decoder, OutputStream, Sink};
-use std::env;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::PathBuf;
+use std::time::Duration;
 
-fn main() -> anyhow::Result<()> {
-    // Setup terminal in raw mode to capture key presses instantly
-    terminal::enable_raw_mode()?;
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(required = true)]
+    file_path: PathBuf,
+}
 
-    // Get the music file path from command line argument
-    let mut args = env::args().skip(1);
-    let music_path = match args.next() {
-        Some(path) => path,
-        None => {
-            eprintln!("Usage: audix <music_file>");
-            terminal::disable_raw_mode()?;
-            std::process::exit(1);
-        }
-    };
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
 
-    // Set up audio output stream and sink
     let (_stream, stream_handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&stream_handle)?;
 
-    // Open music file
-    let file = File::open(&music_path)?;
+    let file = File::open(&args.file_path)?;
     let source = Decoder::new(BufReader::new(file))?;
 
     sink.append(source);
-    sink.play();
-
     println!(
-        "Playing {}. Press SPACE to toggle pause/play. Press 'q' to quit.",
-        music_path
+        " Playing: {}. Press Space to pause/play, 'q' to quit.",
+        args.file_path.display()
     );
 
-    // Main event loop for keyboard input
+    enable_raw_mode()?;
+
     loop {
-        // Wait for keyboard event
-        if event::poll(std::time::Duration::from_millis(200))? {
+        if event::poll(Duration::from_millis(1000))? {
             if let Event::Key(key_event) = event::read()? {
                 match key_event.code {
                     KeyCode::Char(' ') => {
                         if sink.is_paused() {
                             sink.play();
-                            println!("Resumed");
+                            println!(" Resumed");
                         } else {
                             sink.pause();
-                            println!("Paused");
+                            println!(" Paused");
                         }
                     }
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        println!(" Exiting audix. Goodbye!");
                         break;
                     }
                     _ => {}
@@ -62,13 +55,12 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Exit if playback ended
         if sink.empty() {
-            println!("Playback finished");
+            println!("\nPlayback finished.");
             break;
         }
     }
 
-    terminal::disable_raw_mode()?;
+    disable_raw_mode()?;
     Ok(())
 }
