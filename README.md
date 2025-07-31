@@ -1,10 +1,13 @@
 # Audix
 A simple command-line audio player written in Rust.
-Usage
+
+---
+## Usage
 
 This program plays an audio file from the command line. You must provide the path to the file as an argument.
 Building
 To build the project, ensure you have Rust and Cargo installed. Then, run the following command in the project directory:
+
 ```bash
 cargo build --release
 
