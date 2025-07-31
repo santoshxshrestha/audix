@@ -2,6 +2,13 @@
 name = "audix"
 version = "0.1.0"
 edition = "2021"
+authors = ["Santosh Shrestha <santoshxshrestha@gmail.com> "]
+description = "Cli audio player"
+license = "MIT"
+repository = "https://github.com/santoshxshrestha/audix"
+homepage = "https://github.com/santoshxshrestha/audix"
+documentation = "https://github.com/santoshxshrestha/audix#readme"
+readme = "README.md"
 
 [dependencies]
 rodio = "0.17.3"
